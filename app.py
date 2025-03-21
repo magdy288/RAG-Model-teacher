@@ -66,9 +66,9 @@ def vector_embedding(uploaded_file=None):
     if uploaded_file:
         with open(os.path.join('./pdfs', uploaded_file.name), 'wb') as f:
             f.write(uploaded_file.getbuffer())
-        st.session_state.loader = PyPDFDirectoryLoader('./pdfs')
+        st.session_state.loader = PyPDFDirectoryLoader('pdfs')
     else:
-        st.session_state.loader = PyPDFDirectoryLoader('./pdfs')
+        st.session_state.loader = PyPDFDirectoryLoader('pdfs')
         
     
     st.session_state.docs = st.session_state.loader.load()
