@@ -1,164 +1,86 @@
-import streamlit as st
-import os
-from langchain.chains.llm import LLMChain
-from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_ollama import OllamaEmbeddings
+from langchain.chains.retrieval import create_retrieval_chain
+from langchain_ollama import ChatOllama
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.chains.retrieval import create_retrieval_chain
-from langchain_community.vectorstores import FAISS
-from langchain_ollama import OllamaLLM
-from sentence_transformers import SentenceTransformer
-from langchain.embeddings.base import Embeddings
-import numpy as np
-
-llm = OllamaLLM(base_url="http://localhost:11434", model="llama3.2:3b")
+from src.document_loader import load_document
+import streamlit as st
 
 
-class CustomEmbeddings(Embeddings):
-    def __init__(self, model):
-        self.model = model
-        
-    def embed_documents(self, texts):
-        embeddings = self.model.encode(texts)
-        return embeddings.tolist()
+
+
+# Create a Streamlit app
+st.title("AI-Powered Document Q&A")
+
+# Load document to streamlit
+uploaded_file = st.file_uploader("Upload a PDF file", type="pdf")
+
+# If a file is uploaded, create the TextSplitter and vector database
+if uploaded_file :
+
+    # Code to work around document loader from Streamlit and make it readable by langchain
+    temp_file = "./temp.pdf"
+    with open(temp_file, "wb") as file:
+        file.write(uploaded_file.getvalue())
+        file_name = uploaded_file.name
+
+    # Load document and split it into chunks for efficient retrieval.
+    chunks = load_document(temp_file)
+
+    # Message user that document is being processed with time emoji
+    st.write("Processing document... :watch:")
     
-    def embed_query(self, text):
-        embedding = self.model.encode([text])[0]
-        return embedding.tolist()
-    
-    
-    def __call__(self, text):
-        if isinstance(text, str):
-            return self.embed_query(text)
-        elif isinstance(text, list):
-            return self.embed_documents(text)
-        else:
-            raise ValueError('Input must be a string or list of strings')
-        
-        
-        
-if 'embeddings_model' not in st.session_state:
-    model = SentenceTransformer('all-MiniLM-L12-v2')
-    st.session_state.embeddings_model = CustomEmbeddings(model)
-    
-if 'vectors' not in st.session_state:
-    st.session_state.vectors = None
-    
-if 'loader' not in st.session_state:
-    st.session_state.loader = None
-    
-if 'docs' not in st.session_state:
-    st.session_state.docs = None
-    
-if 'text_splitter' not in st.session_state:
-    st.session_state.text_splitter = None
-    
-if 'final_documents' not in st.session_state:
-    st.session_state.final_documents = None
-    
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
+# Generate embeddings
+    # Embeddings are numerical vector representations of data, typically used to capture relationships, similarities,
+    # and meanings in a way that machines can understand. They are widely used in Natural Language Processing (NLP),
+    # recommender systems, and search engines.
+    embeddings = OllamaEmbeddings(model="nomic-embed-text:latest")
+
+    # Can also use HuggingFaceEmbeddings
+    # from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+    # embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+    # Create vector database containing chunks and embeddings
+    vector_db = FAISS.from_documents(chunks, embeddings)
     
     
+# Create a document retriever
+    retriever = vector_db.as_retriever()
+    llm = ChatOllama(model="llama3.2:3b")
     
-def vector_embedding(uploaded_file=None):
-    if uploaded_file:
-        with open('pdfs', 'wb') as f:
-            f.write(uploaded_file.getbuffer())
-        st.session_state.loader = PyPDFDirectoryLoader('pdfs')
-    else:
-        st.session_state.loader = PyPDFDirectoryLoader('pdfs')
-        
     
-    st.session_state.docs = st.session_state.loader.load()
-    st.session_state.text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size = 1000,
-        chunk_overlap = 70
+# Create a system prompt
+    # It sets the overall context for the model.
+    # It influences tone, style, and focus before user interaction starts.
+    # Unlike user inputs, a system prompt is not visible to the end user.
+
+    system_prompt = (
+        "You are a helpful teacher and assistant. Use the given context to answer the question."
+        "If you don't know the answer, say you don't know. "
+        "{context}"
     )
-    st.session_state.final_documents = st.session_state.text_splitter.split_documents(st.session_state.docs[:30])
-    
-    st.session_state.vectors = FAISS.from_documents(
-        st.session_state.final_documents,
-        st.session_state.embeddings_model
+
+    # Create a prompt Template
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system_prompt),
+            ("human", "{input}"),
+        ]
     )
-    
-    
-def summarize_document():
-    if 'final_documents' not in st.session_state or not st.session_state.final_documents:
-        return 'Please upload a document first.'
-    
-    try:
-        full_text = ' '.join([doc.page_content for doc in st.session_state.final_documents])
-        
-        summary_prompt = ChatPromptTemplate.format_prompt(
-            '''
-            Please provide a concise summary of the following document and understand the document carefully:
-            {text}
-            
-            Summary:
-            '''
-        )
-        summary_chain = LLMChain(llm=llm, prompt=summary_prompt)
-        summary = summary_chain.run(text=full_text[:4000])
-        return summary
-    
-    except Exception as e:
-        return f'Error: {str(e)}'
-    
-    
-    
-st.title('chat with pdf')
 
-st.sidebar.header('Upload PDF')
-uploaded_file = st.sidebar.file_uploader('Choose a PDF', type=['pdf'])
+    # Create a chain
+    # It creates a StuffDocumentsChain, which takes multiple documents (text data) and "stuffs" them together before passing them to the LLM for processing.
 
-if uploaded_file and st.sidebar.button('Upload & Process'):
-    vector_embedding(uploaded_file)
-    st.sidebar.success('Document uploaded and processed')
+    question_answer_chain = create_stuff_documents_chain(llm, prompt)
     
-if st.sidebar.button('Summarize the Document'):
-    with st.spinner('Generating summary....'):
-        summary = summarize_document()
-        st.write('### Document Summary')
-        st.write(summary)
-        
-
-prompt1 = st.text_input('Ask a question from the document')
-
-if st.button('ASK'):
-    if prompt1:
-        if 'vectors' not in st.session_state or not st.session_state.vectors:
-            vector_embedding()
-        
-        prompt = ChatPromptTemplate.from_template(
-            '''
-            You are a teacher and good assistant who can help human to fully
-            understand about provided document and give a perfect feed back about the context. \
-                
-            Answer the questions based on the provided context only.
-            Please provide the most accurate response based on the question:
-            <context>
-            {context}
-            </context>
-            Question: {input}
-            '''
-        )
-        
-        document_chain = create_stuff_documents_chain(llm, prompt)
-        retriver = st.session_state.vectors.as_retriever()
-        retrieval_chain = create_retrieval_chain(retriver, document_chain)
-        
-        response = retrieval_chain.invoke({'input': prompt1})
-        answer = response['answer']
-        st.session_state.chat_history.append({'question': prompt1,
-                                              'answer': answer})
-        
-        st.write('### Answer')
-        st.write(answer)
-        
-        with st.expander('Chat History'):
-            for i, chat in enumerate(st.session_state.chat_history):
-                st.write(f'**Q{i+1}:** {chat['question']}')
-                st.write(f'**A{i+1}:** {chat['answer']}')
-                st.write('---------------------------------------------')
+    
+# Creates the RAG
+    chain = create_retrieval_chain(retriever, question_answer_chain)
+    
+# Streamlit input for question
+    question = st.text_input("Ask a question about the document:")
+    if question:
+        # Answer
+        response = chain.invoke({"input": question})['answer']
+        st.write(response)
